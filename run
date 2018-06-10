@@ -1,0 +1,880 @@
+#! /usr/bin/env python3
+"""
+Runscript for PB3D and POST.
+"""
+
+"""
+Written by Toon Weyens.
+
+Based on the Python script template at
+https://github.com/BrianGallew/script_templates/blob/master/template.py
+"""
+
+import sys
+import subprocess
+import os
+from shutil import copy2
+import logging
+import logging.handlers
+import argparse
+import datetime
+import yaml
+from collections import namedtuple
+
+# global variables
+logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
+config_def = 'run.yaml'
+schedulers = dict()
+schedulers['none'] = 'local'
+schedulers['pbs'] = 'through qsub'
+schedulers['slurm'] = 'through slurm'
+Mod = namedtuple('modification', 'key val')
+Cmd = namedtuple('command', 'sim dir val')
+
+
+def is_none(v):
+    """Case-insensitive comparison to none if it is a string
+    """
+    if v is None:
+        return True
+    
+    if isinstance(v, str):
+        if v.lower() == 'none':
+            return True
+    
+    return False
+    
+
+def mod_var(fname_in, fname_out, mods):
+    """Modify value for variable with key in file by replacement repl.
+    :param str fname_in: nput file name
+    :param str fname_out: file name
+    :param mod: list of modification keys and values
+    """
+    f_in = open(fname_in, 'r')
+    f_out = open(fname_out, 'w')
+    for line in f_in:
+        line_out = line
+        for mod in mods:
+            if mod.key in line:
+                line_out = '    {} = {}\n'.format(mod.key, mod.val)
+        f_out.write(line_out)
+    
+    f_in.close()
+    f_out.close()
+
+
+def generate_sample_configfile(fname):
+    """Generate sample yaml configuration file.
+    :param fname: file name
+    """
+    if fname is not None:
+        if os.path.isfile(fname):
+            print('File "{}" already exists; will be overwritten'.format(fname))
+        else:
+            print('Generate sample configuration file in "{}"'.format(fname))
+        with open(fname,'w') as f:
+            f.write('# program directory containing executable PB3D and POST:\n')
+            f.write('prog_dir: None\n\n')
+            f.write('# Scheduler type (None: local, pbs: through qsub, slurm: through slurm):\n')
+            f.write('scheduler: None\n\n')
+            f.write('# Valgrind executable location:\n')
+            f.write('valgrind_location: None\n\n')
+            f.write('# temporary run directory prefix (should be on local drive to avoid network communication; e.g. /tmp/):\n')
+            f.write('temp_run_prefix: None\n\n')
+            f.write('# extra PB3D options (to pass directly to PB3D, see PB3D):\n')
+            f.write('extra_PB3D_opts: None\n\n')
+            f.write('# extra POST options (to pass directly to POST, see POST):\n')
+            f.write('extra_POST_opts: None\n\n')
+            f.write('# Maximum total memory the simulation should ask from the scheduler [MB]:\n')
+            f.write('max_tot_mem: None\n\n')
+            f.write('# queue to use with scheduler:\n')
+            f.write('queue: None\n\n')
+            f.write('# number of nodes to use with scheduler:\n')
+            f.write('n_nodes: None\n\n')
+            f.write('# number of cores to use with scheduler:\n')
+            f.write('n_cores: None\n\n')
+            f.write('# extra scheduler script to source:\n')
+            f.write('extra_scheduler_script: None\n\n')
+        print('Done')
+        sys.exit(1)
+    
+    return
+
+
+def setup_logging(opts):
+    """Sets up logging in a syslog format by log level.
+    :param opts: dictionary of options parsed by argparse
+    """
+    stderr_log_format = "%(levelname) -8s %(asctime)s %(funcName)s line:%(lineno)d: %(message)s"
+    file_log_format = "%(asctime)s - %(levelname)s - %(message)s"
+    if opts['debug']:
+        logger.setLevel(level=logging.DEBUG)
+    elif opts['verbose']:
+        logger.setLevel(level=logging.INFO)
+    else:
+        logger.setLevel(level=logging.WARNING)
+
+    handlers = []
+    ##if opts['syslog']:
+        ##handlers.append(
+            ##logging.handlers.SysLogHandler(facility=opts['syslog']))
+        ### Use standard format here because timestamp and level will be added by
+        ### syslogd.
+    if opts['logfile']:
+        handlers.append(logging.FileHandler(opts['logfile']))
+        handlers[0].setFormatter(logging.Formatter(file_log_format))
+    if not handlers:
+        handlers.append(logging.StreamHandler())
+        handlers[0].setFormatter(logging.Formatter(stderr_log_format))
+    for handler in logging.root.handlers:
+        logging.root.removeHandler(handler)
+    for handler in handlers:
+        logger.root.addHandler(handler)
+    
+    return
+
+
+def default_output_dir():
+    """Generate a default output directory.
+    :return str: default output directory, which is a time string
+    """
+    now = datetime.datetime.now()
+    ##output_dir = "{}-{}-{}.{}-{}-{}.{}".format(now.year, now.month, now.day, now.hour, now.minute, now.second, now.microsecond)
+    output_dir = "{}-{}-{}.{}-{}-{}".format(now.year, now.month, now.day, now.hour, now.minute, now.second)
+    logger.debug('Generated output directory "{}"'.format(output_dir))
+    
+    return output_dir
+
+
+def parse():
+    """Parse inputs.
+    :return: dictionary of options parsed by argparse
+    """
+    # top-level parser
+    parser_top = argparse.ArgumentParser(description=__doc__,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        )
+    parser_top.add_argument('-g', '--generate-configfile',
+        action='store_const',
+        metavar='FNAME',
+        const='{}.sample'.format(config_def),
+        help='Generate default yaml configuration file',
+        dest='configfile_generate')
+    choices_program = [ "PB3D", "POST" ]
+    subparsers = parser_top.add_subparsers(dest='prog_name')
+    
+    parser_PB3D = subparsers.add_parser('PB3D', help='Peeling-Ballooning in 3-D', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser_POST = subparsers.add_parser('POST', help='Post-processing for PB3D', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    # arguments for both PB3D and POST
+    for _, subparser in subparsers.choices.items():
+        subparser.add_argument('-v', '--verbose',
+            action='store_true',
+            default=False,
+            help='Verbose output',
+            dest='verbose')
+        subparser.add_argument('-d', '--debug',
+            action='store_true',
+            default=False,
+            help='Debug with valgrind',
+            dest='debug')
+        ##subparser.add_argument('-s', '--syslog',
+            ##action='store',
+            ##metavar='FACILITY',
+            ##help='Send log messages to the syslog')
+        subparser.add_argument('-l', '--logfile',
+            action='store',
+            metavar='FNAME',
+            help='Send log messages to a file')
+        subparser.add_argument('-c', '--configfile',
+            action='store',
+            metavar='FNAME',
+            default=config_def,
+            help='Yaml configuration file',
+            dest='config_fname')
+        subparser.add_argument('n',
+            action='store',
+            help='Number of MPI processes')
+        subparser.add_argument(
+            action='store',
+            metavar='input',
+            help='Input options file',
+            dest='input_fname')
+    
+    # PB3D specific arguments
+    parser_PB3D.add_argument('-o', '--output',
+        action='store',
+        metavar='OUT',
+        default=default_output_dir(),
+        help='Specify output folder',
+        dest='output_dir')
+    parser_PB3D.add_argument(
+            action='store',
+            metavar='eq',
+            help='Equilibrium file',
+            dest='eq_fname')
+    parser_PB3D.add_argument('-i',
+            '--input-modification-file',
+            action='store',
+            metavar='FNAME',
+            help='File with modifications to input file',
+            dest='input_mod_fname')
+    
+    # POST specific arguments
+    parser_POST.add_argument('-o', '--output',
+        action='store',
+        metavar='OUT',
+        default=None,
+        help='Specify output folder',
+        dest='output_dir')
+    parser_POST.add_argument('PB3D_out',
+        action='store',
+        help='Folder containing PB3D output; or actual .h5 output file name')
+    
+    # parse if enough arguments
+    if len(sys.argv[1:])==0:
+        parser_top.print_help(sys.stderr)
+        sys.exit(1)
+    else:
+        opts_space = argparse.Namespace()  # pylint: disable=invalid-name
+        parser_top.parse_args(namespace=opts_space)
+    
+    return vars(opts_space)
+
+
+def set_PB3D_out(PB3D_out):
+    """Set full PB3D output file, for POST-processing.
+    :param str PB3D_out: PB3D output file, can be absolute or relative; can be a folder or an actual .h5 file
+    :return str: the full absolute output file name
+    """
+    # check if user provided a file
+    logger.debug('Checking user provided file "{}"'.format(PB3D_out))
+    PB3D_out_fname = None
+    if os.path.isfile(PB3D_out):
+        logger.debug('It is a file; checking whether it is an .h5 file')
+        if PB3D_out.split('.')[-1] == 'h5':
+            PB3D_out_fname = os.path.join(os.getcwd(), PB3D_out)
+            logger.debug('It is an .h5 file')
+        else:
+            pass
+    else:
+        logger.debug('It is not a file; checking whether it is a directory')
+        if os.path.isdir(PB3D_out):
+            logger.debug('It is a directory; checking whether it contains an .h5 file')
+            n_h5_files = 0
+            for f in os.listdir(PB3D_out):
+                if f.endswith('.h5'):
+                    n_h5_files += 1
+                    PB3D_out_fname = os.path.join(os.path.abspath(PB3D_out), f)
+                if n_h5_files > 1:
+                    logger.error('More than 1 .h5 file in "{}"'.format(PB3D_out))
+                    sys.exit(1)
+            else:
+                pass
+        else:
+            pass
+    
+    if PB3D_out_fname is None:
+        logger.error('"{}" is not an .h5 file, nor a directory containing one'.format(PB3D_out))
+        sys.exit(1)
+    
+    logger.info('Setting full PB3D output file to "{}"'.format(PB3D_out_fname))
+    
+    return PB3D_out_fname
+
+
+def process_inputs(opts):
+    """Checks and processes input arguments
+    :param opts: dictionary of options parsed by argparse
+    """
+    logger.info('Running program {}'.format(opts['prog_name']))
+    
+    # base directory
+    opts['base_dir'] = os.getcwd()
+    
+    # input file: convert to absolute path
+    opts['input_fname'] = os.path.abspath(opts['input_fname'])
+    
+    # output directory: convert to absolute path and for POST also set default and PB3D output
+    if opts['prog_name'] == 'POST':
+        opts['PB3D_out_fname'] = set_PB3D_out(opts['PB3D_out'])
+        if opts['output_dir'] is None:
+            opts['output_dir'] = os.path.dirname(opts['PB3D_out_fname'])
+    opts['output_dir'] = os.path.abspath(opts['output_dir'])
+    
+    # equilibrium file: convert to absolute path
+    if opts['prog_name'] == 'PB3D':
+        opts['eq_fname'] = os.path.abspath(opts['eq_fname'])
+        logger.info('Equilibrium file "{}"'.format(opts['eq_fname']))
+        if not os.path.isfile(opts['eq_fname']):
+            logger.error('No such file')
+            sys.exit(1)
+    
+    # input modifications:
+    if opts['prog_name'] == 'PB3D':
+        opts['input_mods'] = []
+        if opts['input_mod_fname'] is not None:
+            # convert relative to absolute paths
+            opts['input_mod_fname'] = os.path.abspath(opts['input_mod_fname'])
+            
+            # count number of modifications
+            if os.path.isfile(opts['input_mod_fname']):
+                logger.info('Using input modification file "{}"'.format(opts['input_mod_fname']))
+                with open(opts['input_mod_fname'],'r') as f:
+                    for line in f:
+                        if not line.lstrip().startswith('#'):
+                            logger.debug('line "{}"'.format(line.rstrip('\n')))
+                            mods = line.rstrip('\n').split(',')
+                            mod_set = []
+                            for mod in mods:
+                                logger.debug('modification "{}"'.format(mod))
+                                mod_set.append(Mod(key=mod.split('=')[0].strip(), val=mod.split('=')[1].strip()))
+                            opts['input_mods'].append(mod_set)
+                logger.info('({} modifications)'.format(len(opts['input_mods'])))
+
+
+def open_config_file(config_fname):
+    """Process yaml config file
+    :param str config_fname: yaml configuration file
+    :return: dictionary
+    """
+    if os.path.isfile(config_fname):
+        with open(config_fname, 'rt') as f:
+            try:
+                configs = yaml.safe_load(f.read())
+            except Exception as e:
+                logger.error(e)
+                sys.exit(1)
+    else:
+        logger.error('"{}" not a yaml configuration file; make sure it exists'.format(config_fname))
+        logger.error('To generate a default, use the --generate-configfile option')
+        sys.exit(1)
+    
+    logger.info('Opened configuration file "{}"'.format(config_fname))
+    
+    return configs
+
+
+def process_configfile(opts):
+    """Process yaml configuration file and check it
+    :param opts: dictionary of options parsed by argparse
+    :return: dictionary with configurations
+    """
+    fname = opts['config_fname']
+    configs = open_config_file(fname)
+    
+    # program directory: assume current directory if none; convert to absolute path
+    if is_none(configs['prog_dir']):
+        configs['prog_dir'] = os.getcwd()
+    configs['prog_dir'] = os.path.abspath(configs['prog_dir'])
+    logger.info('Program directory: "{}"'.format(configs['prog_dir']))
+    prog_fname = os.path.join(configs['prog_dir'], opts['prog_name'])
+    if not os.path.isfile(prog_fname):
+        logger.error('Executable "{}" not found'.format(prog_fname))
+        sys.exit(1)
+    
+    # scheduler
+    configs['scheduler'] = configs['scheduler'].lower()
+    scheduler = configs['scheduler']
+    logger.info('Scheduler: "{}"'.format(scheduler))
+    if scheduler not in schedulers:
+        logger.error('Nonexistent scheduler "{}"; possible values:'.format(scheduler))
+        for s_key, s_val in schedulers.items():
+            logger.error('    {}: {}'.format(s_key,s_val))
+        sys.exit(1)
+    else:
+        logger.info('({})'.format(schedulers[scheduler]))
+    
+    # valgrind directory: assume current directory if none; convert to absolute path
+    if is_none(configs['valgrind_location']):
+        configs['valgrind_location'] = os.path.join(os.getcwd(), 'valgrind')
+    configs['valgrind_location'] = os.path.abspath(configs['valgrind_location'])
+    logger.info('Valgrind location: {}'.format(configs['valgrind_location']))
+    if not os.path.isfile(configs['valgrind_location']) or not os.access(configs['valgrind_location'], os.X_OK):
+        logger.error('Could not find or execute valgrind at {}'.format(configs['valgrind_location']))
+        sys.exit(1)
+    if opts['debug'] and is_none(configs['valgrind_location']):
+        logger.error('Not possible to launch debug mode without a working valgrind')
+        sys.exit(1)
+    
+    # temporary run prefix
+    temp_run_prefix = configs['temp_run_prefix']
+    logger.info('Temporary run prefix: "{}"'.format(temp_run_prefix))
+    if scheduler == 'pbs' or scheduler == 'slurm':
+        if is_none(temp_run_prefix):
+            logger.critical('Not running in a temporary folder; This might severely degrade performance')
+            logger.critical('Consider running in a local disk folder, such as "/tmp/"')
+    
+    # extra PB3D options
+    extra_PB3D_opts = configs['extra_PB3D_opts']
+    if not is_none(extra_PB3D_opts):
+        logger.info('Passing extra PB3D options "{}"'.format(extra_PB3D_opts))
+    
+    # extra POST options
+    extra_POST_opts = configs['extra_POST_opts']
+    if not is_none(extra_POST_opts):
+        logger.info('Passing extra POST options "{}"'.format(extra_POST_opts))
+    
+    # scheduler max_tot_mem, queue, number of nodes, number of cores and extra scheduler scripts
+    if scheduler == 'pbs' or scheduler == 'slurm':
+        logger.info('maximum {}MB specified for scheduler'.format(configs['max_tot_mem']))
+        try:
+            configs['max_tot_mem'] = int(configs['max_tot_mem'])
+        except ValueError:
+            logger.error('Could not convert "{}" to an integer'.format(configs['max_tot_mem']))
+            sys.exit(1)
+        
+        logger.info('queue "{}" specified for scheduler'.format(configs['queue']))
+        if is_none(configs['queue']):
+            logger.error('Need to specify a valid queue')
+            sys.exit(1)
+        
+        logger.info('{} nodes specified for scheduler'.format(configs['n_nodes']))
+        if is_none(configs['n_nodes']):
+            logger.error('Need to specify a valid number of nodes')
+            sys.exit(1)
+        
+        logger.info('{} cores specified for scheduler'.format(configs['n_cores']))
+        if is_none(configs['n_cores']):
+            logger.error('Need to specify a valid number of cores')
+            sys.exit(1)
+        
+        logger.info('extra script "{}" specified for scheduler'.format(configs['extra_scheduler_script']))
+        if not is_none(configs['extra_scheduler_script']):
+            configs['extra_scheduler_script'] = os.path.abspath(configs['extra_scheduler_script'])
+            if not os.path.isfile(configs['extra_scheduler_script']):
+                logger.error('Not a valid file')
+                sys.exit(1)
+    
+    return configs
+
+
+def start_pbs_script(configs, opts, sim_name, output_dir):
+    """start a pbs script.
+    :param configs: dictionary of configuration variables from yaml file
+    :param opts: dictionary of options parsed by argparse
+    :param str sim_name: name of simulation
+    :param str output_dir: current output directory
+    :return: script as list of strings
+    """
+    script = []
+    
+    script.append('#PBS -N {}'.format(sim_name))
+    script.append('#PBS -k oe')
+    script.append('#PBS -o {}/{}.out'.format(output_dir, opts['prog_name']))
+    script.append('#PBS -e {}/{}.err'.format(output_dir, opts['prog_name']))
+    script.append('#PBS -l nodes={}:ppn={}'.format(configs['n_nodes'], configs['n_cores']))
+    script.append('#PBS -q {}'.format(configs['queue']))
+    script.append('#PBS -l vmem={}mb'.format(configs['max_tot_mem']))
+    script.append('#PBS -l mem={}mb'.format(configs['max_tot_mem']))
+    script.append('#PBS -l walltime=12:00:00')
+    script.append('')
+    
+    script.append('# set up general variables')
+    if not is_none(configs['extra_scheduler_script']):
+        script.append('. {}'.format(configs['extra_scheduler_script']))
+    script.append('')
+    
+    script.append('# user output')
+    script.append('echo "Job statistics:"')
+    script.append('echo "    ID                $PBS_JOBID"')
+    script.append('echo "    name              $PBS_JOBNAME"')
+    script.append('echo "    environment       $PBS_ENVIRONMENT"')
+    script.append('echo "    nodefile          $PBS_NODEFILE"')
+    script.append('echo "    nodes             $(cat $PBS_NODEFILE | paste -sd \',\' -)"')
+    script.append('echo "    array ID          $PBS_ARRAYID"')
+    script.append('echo "    procs             $PBS_NP"')
+    script.append('echo "    queue             $PBS_QUEUE"')
+    script.append('echo "    walltime          $PBS_WALLTIME"')
+    script.append('echo "    submit directory  $PBS_O_WORKDIR"')
+    script.append('echo "    host machine      $PBS_O_HOST"')
+    script.append('echo "    procs per node    $PBS_NUM_PPN"')
+    script.append('echo "    login name        $PBS_O_LOGNAME"')
+    script.append('echo "    home              $PBS_O_HOME"')
+    script.append('echo "" ')
+    script.append('')
+    
+    script.append('# set memory limit')
+    script.append('ulimit -l unlimited')
+    script.append('')
+    
+    script.append('# remove possible output and error file')
+    script.append('rm -f {}/{}.out'.format(output_dir, opts['prog_name']))
+    script.append('rm -f {}/{}.err'.format(output_dir, opts['prog_name']))
+    script.append('')
+    
+    script.append('# set local output and error and create symbolic links')
+    script.append('loc_out=$PBS_O_HOME/{}.o$(echo $PBS_JOBID | cut -d\'.\' -f 1)'.format(sim_name))
+    script.append('loc_err=$PBS_O_HOME/{}.e$(echo $PBS_JOBID | cut -d\'.\' -f 1)'.format(sim_name))
+    script.append('ln -sf $loc_out {}/{}.out'.format(output_dir, opts['prog_name']))
+    script.append('ln -sf $loc_err {}/{}.err'.format(output_dir, opts['prog_name']))
+    script.append('')
+    
+    return script
+
+
+def end_pbs_script(opts, run_dir, output_dir):
+    """end a pbs script.
+    :param opts: dictionary of options parsed by argparse
+    :param str run_dir: name of directory where run
+    :param str output_dir: current output directory
+    :return: script as list of strings
+    """
+    script = []
+    
+    script.append('# terminate pbs script')
+    script.append('mv $loc_out {}/{}.out'.format(output_dir, opts['prog_name']))
+    script.append('mv $loc_err {}/{}.err'.format(output_dir, opts['prog_name']))
+    script.append('[[ -s {}.err ]] || rm {}.err'.format(*[opts['prog_name']]*2))
+    script.append('')
+    script.append('exit 0')
+    script.append('')
+    
+    return script
+
+
+def start_temp_run_script(configs, opts, run_dir, output_dir, input_fname):
+    """Start script due to a different temporary run directory
+    Depending on whether the temporary run prefix is nonzero, this also includes copying necessary files there and back.
+    :param configs: dictionary of configuration variables from yaml file
+    :param opts: dictionary of options parsed by argparse
+    :param str run_dir: name of directory where run
+    :param str output_dir: current output directory
+    :param str input_fname: current input file name
+    :return: script as list of strings
+    """
+    script = []
+    
+    script.append('# create directory structure')
+    script.append('rundir={}'.format(run_dir))
+    script.append('outdir={}'.format(output_dir))
+    script.append('mkdir -p $rundir $rundir/Plots $rundir/Data $rundir/Scripts || {')
+    script.append('    # failure')
+    script.append('    echo "ERROR: unable to create directory $rundir/ and subdirectories"')
+    script.append('    echo "Do you have the correct permissions?"')
+    script.append('    echo ""')
+    script.append('    exit 1')
+    script.append('}')
+    script.append('')
+    
+    script.append('# copy inputs and the program')
+    script.append('rsync --progress -zvhL {} $rundir/ 2> /dev/null'.format(input_fname))
+    script.append('rsync --progress -zvhL *_out.txt $rundir/ 2> /dev/null')
+    if opts['prog_name'] == 'PB3D':
+        script.append('rsync --progress -zvhL {} $rundir/'.format(opts['eq_fname']))
+    if opts['prog_name'] == 'POST':
+        script.append('ln -sf {} $rundir/'.format(opts['PB3D_out_fname']))
+    script.append('rsync --progress -zvhL {} $rundir/'.format(os.path.join(configs['prog_dir'], opts['prog_name'])))
+    script.append('chmod +x $rundir/{}'.format(opts['prog_name']))
+    script.append('')
+    
+    script.append('# go to run directory')
+    script.append('cd $rundir')
+    script.append('')
+    
+    return script
+
+
+def end_temp_run_script(opts):
+    """End script due to a different temporary run directory
+    Depending on whether the temporary run prefix is nonzero, this also includes copying necessary files there and back.
+    :param opts: dictionary of options parsed by argparse
+    :return: script as list of strings
+    """
+    script = []
+    
+    script.append('# Done, copy files back with rsync')
+    script.append('echo "# Copy results with rsync"')
+    script.append('find $rundir/ -name \'*temp.h5\' | xargs rm -f')
+    script.append('ls *.h5 > $outdir/exclude-list.txt')
+    script.append('cd $outdir')
+    script.append('rsync --remove-source-files --progress --exclude-from \'exclude-list.txt\' -zvhr $rundir/* .')
+    script.append('rm exclude-list.txt')
+    if opts['prog_name'] == 'PB3D':
+        script.append('rsync --remove-source-files --progress -zvhr $rundir/* .')
+    script.append('[[ $? -eq 0 ]] && rm -r $rundir')
+    script.append('')
+    
+    return script
+    
+    
+def setup_bulk_script(configs, opts, input_fname):
+    """Set up the bulk part of the execution script.
+    Depending on whether the temporary run prefix is nonzero, this also includes copying necessary files there and back.
+    :param configs: dictionary of configuration variables from yaml file
+    :param opts: dictionary of options parsed by argparse
+    :param str input_fname: current input file name
+    :return: script as list of strings
+    """
+    script = []
+    
+    script.append('# set mpi command')
+    input_name = os.path.basename(opts['input_fname'])
+    if opts['prog_name'] == 'PB3D':
+        eq_name = os.path.basename(opts['eq_fname'])
+        mpi_command = './{} {} {}'.format(opts['prog_name'], input_name, eq_name)
+        if not is_none(configs['extra_PB3D_opts']):
+            mpi_command += ' ' + configs['extra_PB3D_opts']
+    if opts['prog_name'] == 'POST':
+        PB3D_out_name = os.path.basename(opts['PB3D_out_fname'])
+        mpi_command = './{} {} {}'.format(opts['prog_name'], input_name, PB3D_out_name)
+        if not is_none(configs['extra_POST_opts']):
+            mpi_command += configs['extra_POST_opts']
+    script.append('MPI_command="{}"'.format(mpi_command))
+    script.append('')
+    
+    script.append('# run mpi command')
+    script.append('run=$(which mpirun)')
+    if opts['debug']:
+        run_command = '{} '.format(configs['valgrind_location'])
+    else:
+        run_command = ''
+    script.append('{}$run -np {} $MPI_command'.format(run_command, opts['n']))
+    script.append('')
+    
+    return script
+    
+
+def create_exec_script(configs, opts, output_dir, input_fname):
+    """Create the execution script.
+    Depending on whether the temporary run prefix is nonzero, this also includes copying necessary files there and back.
+    :param configs: dictionary of configuration variables from yaml file
+    :param opts: dictionary of options parsed by argparse
+    :param str output_dir: current output directory
+    :param str input_fname: current input file name
+    :return: list of Cmds with command to execute
+    """
+    # initialize commands
+    cmds = list()
+    
+    # variables for execution script
+    sim_name = '{}_{}'.format(opts['prog_name'], os.path.relpath(output_dir).replace('/', '_'))
+    if is_none(configs['temp_run_prefix']):
+        run_dir = None
+    else:
+        run_dir = os.path.join(configs['temp_run_prefix'], sim_name)
+    
+    # initialize
+    exec_script = list()
+    exec_script.append('#! /usr/bin/env bash')
+    exec_script.append('')
+    
+    # start scheduler-specific
+    if configs['scheduler'] == 'none':
+        pass
+    if configs['scheduler'] == 'pbs':
+        exec_script += start_pbs_script(configs, opts, sim_name, output_dir)
+    if configs['scheduler'] == 'slurm':
+        logger.error('NOT YET IMPLEMENTED')
+        sys.exit(1)
+    
+    # start temp_run-specific
+    if not is_none(configs['temp_run_prefix']):
+        exec_script += start_temp_run_script(configs, opts, run_dir, output_dir, input_fname)
+    
+    # bulk
+    exec_script += setup_bulk_script(configs, opts, input_fname)
+    
+    # end temp_run-specific
+    if not is_none(configs['temp_run_prefix']):
+        exec_script += end_temp_run_script(opts)
+    
+    # end scheduler-specific
+    if configs['scheduler'] == 'none':
+        pass
+    if configs['scheduler'] == 'pbs':
+        exec_script += end_pbs_script(opts, run_dir, output_dir)
+    if configs['scheduler'] == 'slurm':
+        logger.error('NOT YET IMPLEMENTED')
+        sys.exit(1)
+
+    if exec_script is None:
+        logger.error('No script generated')
+        sys.exit(1)
+    
+    # write to file with correct extension
+    if configs['scheduler'] == 'none':
+        ext = 'sh'
+    if configs['scheduler'] == 'pbs':
+        ext = 'pbs'
+    if configs['scheduler'] == 'slurm':
+        ext = 'slurm'
+    script_fname = os.path.join(output_dir, '{}.{}'.format(opts['prog_name'], ext))
+    with open(script_fname, 'w') as f:
+        for l in exec_script:
+            f.write('{}\n'.format(l))
+        f.flush()
+    os.chmod(script_fname, 509)
+    
+    # set up command
+    if configs['scheduler'] == 'none':
+        cmds.append(Cmd(sim=sim_name, dir=output_dir, val=[script_fname]))
+    if configs['scheduler'] == 'pbs':
+        cmds.append(Cmd(sim=sim_name, dir=None, val=['qsub', script_fname]))
+    if configs['scheduler'] == 'slurm':
+        logger.error('NOT YET IMPLEMENTED')
+        sys.exit(1)
+    
+    logger.info('Set up execution script for {} in "{}"'.format(sim_name, script_fname))
+    
+    return cmds
+    
+
+def setup_output_structure(opts, configs):
+    """Set up output directory structure
+    For PB3D:
+        * New directory necessary, error if it already exists.
+        * The run directory has an equilibrium file, an input file and an executable, as well as Plots/ Scripts/ and Data/ folders.
+        * possible input file modifications, in which case a series of subdirectories is created, with symlinks.
+    For POST:
+        * If the PB3D output directory (of PB3D_out_fname), equals the output directory, post-processing is done in that folder.
+        * If the output directory is different, the .h5 PB3D output file is copied there.
+    :param opts: dictionary of options parsed by argparse
+    :param configs: dictionary of configuration variables from yaml file
+    :return: list of Cmds with command to execute
+    """
+    output_dir = opts['output_dir']
+    input_name = os.path.basename(opts['input_fname'])
+    logger.info('Set up output directory structure in "{}"'.format(output_dir))
+    cmds = list()
+    
+    # set up output directory
+    if opts['prog_name'] == 'PB3D':
+        if os.path.isdir(output_dir):
+            logger.error('Directory "{}" already exists'.format(output_dir))
+            sys.exit(1)
+        
+        # parent directory
+        try:
+            os.makedirs(output_dir)
+        except Exception as e:
+            logger.error(e)
+            sys.exit(1)
+        
+        # equilibrium
+        copy2(opts['eq_fname'], output_dir)
+        
+        if len(opts['input_mods']) > 0:
+            copy2(opts['input_mod_fname'], output_dir)
+            for i in range(len(opts['input_mods'])):
+                output_dir_sub = os.path.join(output_dir, str(i+1))
+                # subdirectories
+                os.makedirs(os.path.join(output_dir_sub, 'Data'))
+                os.makedirs(os.path.join(output_dir_sub, 'Scripts'))
+                os.makedirs(os.path.join(output_dir_sub, 'Plots'))
+                
+                # symlinks
+                os.symlink('../PB3D', os.path.join(output_dir_sub, 'PB3D'))
+                eq_name = os.path.basename(opts['eq_fname'])
+                os.symlink('../{}'.format(eq_name), os.path.join(output_dir_sub, eq_name))
+                
+                # modified input file
+                input_fname_mod = os.path.join(output_dir_sub, input_name)
+                mod_var(opts['input_fname'], input_fname_mod, opts['input_mods'][i])
+                
+                # Create the execution script
+                cmds += create_exec_script(configs, opts, output_dir_sub, input_fname_mod)
+        else:
+            # directories
+            os.makedirs(os.path.join(output_dir, 'Data'))
+            os.makedirs(os.path.join(output_dir, 'Scripts'))
+            os.makedirs(os.path.join(output_dir, 'Plots'))
+            
+            # create execution script
+            input_fname = os.path.join(output_dir, input_name)
+            cmds += create_exec_script(configs, opts, output_dir, input_name)
+    
+    if opts['prog_name'] == 'POST':
+        PB3D_out_dir = os.path.dirname(os.path.abspath(opts['PB3D_out_fname']))
+        if os.path.abspath(output_dir) == PB3D_out_dir:
+            logger.info('output directory "{}" is identical to PB3D output directory'.format(output_dir))
+        else:
+            if os.path.isdir(output_dir):
+                logger.error('Directory "{}" already exists'.format(output_dir))
+                sys.exit(1)
+            else:
+                # parent directory
+                try:
+                    os.makedirs(output_dir)
+                except Exception as e:
+                    logger.error(e)
+                    sys.exit(1)
+            
+            # directories
+            os.makedirs('{}/Data'.format(output_dir))
+            os.makedirs('{}/Scripts'.format(output_dir))
+            os.makedirs('{}/Plots'.format(output_dir))
+            
+            # symlink PB3D output
+            PB3D_out_name = os.path.basename(opts['PB3D_out_fname'])
+            os.symlink(opts['PB3D_out_fname'], os.path.join(output_dir, PB3D_out_name))
+        
+        # create execution script
+        input_fname = os.path.join(output_dir, input_name)
+        cmds += create_exec_script(configs, opts, output_dir, input_fname)
+    
+    # copy executable and input
+    try:
+        copy2(os.path.join(configs['prog_dir'], opts['prog_name']), output_dir)
+        copy2(opts['input_fname'], output_dir)
+    except Exception as e:
+        logger.error(e)
+        sys.exit(1)
+    
+    return cmds
+
+
+def main():
+    # parse inputs
+    opts = parse()
+
+    # check if configuration file requested
+    generate_sample_configfile(opts['configfile_generate'])
+    
+    # set up logging
+    setup_logging(opts)
+    
+    # process input arguments
+    process_inputs(opts)
+    
+    # process yaml configs
+    configs = process_configfile(opts)
+    
+    # set up output directory structure
+    cmds = setup_output_structure(opts, configs)
+    
+    # execute commands
+    # (based on https://www.endpoint.com/blog/2015/01/28/getting-realtime-output-using-python)
+    for cmd in cmds:
+        logger.info('Running command "{}"'.format(cmd.val))
+        if opts['prog_name'] == 'PB3D' and len(opts['input_mods']) > 0:
+            sim_name = '[{}] '.format(cmd.sim)
+        else:
+            sim_name = ''
+        
+        print('')
+        print('+ START SIMULATION {}+'.format(sim_name))
+        print('')
+        
+        p = subprocess.Popen(cmd.val, cwd=cmd.dir, shell=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        while True:
+            output = p.stdout.readline().decode()
+            if output == '' and p.poll() is not None:
+                break
+            if output:
+                try:
+                    print('{}{}'.format(sim_name, output.rstrip('\n')))
+                except Exception as e:
+                    # some terminals are not able to output non-ascii
+                    pass
+        
+        print('')
+        print('+ END SIMULATION {}+'.format(sim_name))
+        print('')
+    
+    return None
+
+
+if __name__ == '__main__':
+    main()
