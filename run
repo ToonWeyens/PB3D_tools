@@ -348,21 +348,27 @@ def open_config_file(config_fname):
     :param str config_fname: yaml configuration file
     :return: dictionary
     """
-    if os.path.isfile(config_fname):
-        with open(config_fname, 'rt') as f:
-            try:
-                configs = yaml.safe_load(f.read())
-            except Exception as e:
-                logger.error(e)
-                sys.exit(1)
-    else:
-        logger.error('"{}" not a yaml configuration file; make sure it exists'.format(config_fname))
-        logger.error('To generate a default, use the --generate-configfile option')
-        sys.exit(1)
+    # set up list of paths to try
+    config_fnames = list()
+    config_fnames.append(config_fname)
+    config_fnames.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), config_def))
     
-    logger.info('Opened configuration file "{}"'.format(config_fname))
+    for f in config_fnames:
+        logger.info('Try opening configuration file "{}"'.format(f))
+        if os.path.isfile(f):
+            with open(f, 'rt') as f:
+                try:
+                    configs = yaml.safe_load(f.read())
+                    config_fname = f
+                    logger.info('Opened configuration file "{}"'.format(f))
+                    return configs
+                except Exception as e:
+                    logger.error(e)
+                    sys.exit(1)
     
-    return configs
+    logger.error('No yaml configuration files found; make sure it exists')
+    logger.error('To generate a default, use the --generate-configfile option')
+    sys.exit(1)
 
 
 def process_configfile(opts):
@@ -559,8 +565,8 @@ def start_slurm_script(configs, opts, sim_name, output_dir):
     script = []
 
     script.append('#SBATCH --job-name={}'.format(sim_name))
-    script.append('#SBATCH --output={}/{}_IO.out'.format(output_dir, opts['prog_name']))
-    script.append('#SBATCH --error={}/{}_IO.err'.format(output_dir, opts['prog_name']))
+    script.append('#SBATCH --output={}/{}.out'.format(output_dir, opts['prog_name']))
+    script.append('#SBATCH --error={}/{}.err'.format(output_dir, opts['prog_name']))
     script.append('#SBATCH --nodes={}'.format(configs['n_nodes']))
     script.append('#SBATCH --ntasks-per-node={}'.format(configs['n_cores']))
     if configs['queue'] is not None:
@@ -591,11 +597,6 @@ def start_slurm_script(configs, opts, sim_name, output_dir):
     
     script.append('# set memory limit')
     script.append('ulimit -l unlimited')
-    script.append('')
-    
-    script.append('# remove possible output and error file')
-    script.append('rm -f {}/{}_IO.out'.format(output_dir, opts['prog_name']))
-    script.append('rm -f {}/{}_IO.err'.format(output_dir, opts['prog_name']))
     script.append('')
     
     return script
@@ -631,7 +632,7 @@ def end_slurm_script(opts, run_dir, output_dir):
     script = []
     
     script.append('# terminate slurm script')
-    script.append('[[ -s {}_IO.err ]] || rm {}_IO.err'.format(*[opts['prog_name']]*2))
+    script.append('[[ -s {}.err ]] || rm {}.err'.format(*[opts['prog_name']]*2))
     script.append('')
     script.append('exit 0')
     script.append('')

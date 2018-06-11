@@ -1,4 +1,15 @@
-# run_PB3D
+# PB3D_tools
+Auxiliary tools for easy PB3D usage:
+- Run PB3D or POST with `run`.
+- Extract jobs info for parameter scan runs with input file modifications with `extract_jobs_info`.
+- Inspect all running SLURM jobs for current user with `inspect_SLURM_jobs`.
+
+For easy usage, add directory to `$PATH`:
+```
+echo -e "# add PB3D run tools \nexport PATH=\$PATH:$(pwd)" >> ~/.bashrc
+```
+
+## run
 Runscript for the [PB3D](http://pb3d.github.io/) code, written in Python 3.
 
 Features:
@@ -13,15 +24,12 @@ Run
 ```
 for more information.
 
-# extract_jobs_info
+## extract_jobs_info
 Extracts the Eigenvalues of jobs for an input array
 Can be run with either 1 or 3 arguments:
 1. `./extract_jobs_info [RUN FOLDER]` for default usage.
 2. `./extract_jobs_info [RUN FOLDER] [ARRAY INPUT] [OUTPUT FILE]` where for the array input file can be specified, as well as the output file.
 produced there.
 
-# inspect_SLURM_jobs
+## inspect_SLURM_jobs
 Inspect all SLURM currently being run by user, with the option to cancel them interactively.
-
-# profile
-Runs gprof on gmon.out and visualized with profile.xdot.
