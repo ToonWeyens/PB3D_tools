@@ -1,6 +1,14 @@
 #! /usr/bin/env python3
 """
 Runscript for PB3D and POST.
+
+Features:
+- Automatic support for schedulers such as PBS and SLURM.
+- Customization through yaml options file.
+- Easy parameter scans through input file modifications in a custom file .
+- Complementary script `extract_jobs_info` to extract the eigenvalues for such an input file modification run.
+
+See help for more information.
 """
 
 """
@@ -154,7 +162,7 @@ def parse():
     """
     # top-level parser
     parser_top = argparse.ArgumentParser(description=__doc__,
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        formatter_class=argparse.RawTextHelpFormatter
         )
     parser_top.add_argument('-g', '--generate-configfile',
         action='store_const',
@@ -850,7 +858,7 @@ def setup_output_structure(opts, configs):
         copy2(opts['eq_fname'], output_dir)
         
         if len(opts['input_mods']) > 0:
-            copy2(opts['input_mod_fname'], output_dir)
+            copy2(opts['input_mod_fname'], os.path.join(output_dir, 'array_input'))
             for i in range(len(opts['input_mods'])):
                 output_dir_sub = os.path.join(output_dir, str(i+1))
                 # subdirectories
