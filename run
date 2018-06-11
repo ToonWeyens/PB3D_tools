@@ -11,6 +11,7 @@ https://github.com/BrianGallew/script_templates/blob/master/template.py
 """
 
 import sys
+import shutil
 import subprocess
 import os
 from shutil import copy2
@@ -419,16 +420,28 @@ def process_configfile(opts):
     # scheduler max_tot_mem, queue, number of nodes, number of cores and extra scheduler scripts
     if scheduler == 'pbs' or scheduler == 'slurm':
         logger.info('maximum {}MB specified for scheduler'.format(configs['max_tot_mem']))
-        try:
-            configs['max_tot_mem'] = int(configs['max_tot_mem'])
-        except ValueError:
-            logger.error('Could not convert "{}" to an integer'.format(configs['max_tot_mem']))
-            sys.exit(1)
+        if is_none(configs['max_tot_mem']):
+            if scheduler == 'pbs':
+                logger.error('Need to specify a valid value')
+                sys.exit(1)
+            if scheduler == 'slurm':
+                logger.info('Slurm scheduler default will be used')
+                configs['max_tot_mem'] = None
+        else:
+            try:
+                configs['max_tot_mem'] = int(configs['max_tot_mem'])
+            except ValueError:
+                logger.error('Could not convert "{}" to an integer'.format(configs['max_tot_mem']))
+                sys.exit(1)
         
         logger.info('queue "{}" specified for scheduler'.format(configs['queue']))
         if is_none(configs['queue']):
-            logger.error('Need to specify a valid queue')
-            sys.exit(1)
+            if scheduler == 'pbs':
+                logger.error('Need to specify a valid value')
+                sys.exit(1)
+            if scheduler == 'slurm':
+                logger.info('Slurm scheduler default will be used')
+                configs['queue'] = None
         
         logger.info('{} nodes specified for scheduler'.format(configs['n_nodes']))
         if is_none(configs['n_nodes']):
@@ -448,6 +461,19 @@ def process_configfile(opts):
                 sys.exit(1)
     
     return configs
+
+
+def check_deps():
+    """Check dependencies.
+    """
+    deps = list()
+    deps.append('rsync')
+    
+    for dep in deps:
+        dep_dir = shutil.which(dep)
+        if dep_dir is None:
+            logger.error('Cannot find executable "{}"'.format(dep))
+            sys.exit(1)
 
 
 def start_pbs_script(configs, opts, sim_name, output_dir):
@@ -514,6 +540,59 @@ def start_pbs_script(configs, opts, sim_name, output_dir):
     return script
 
 
+def start_slurm_script(configs, opts, sim_name, output_dir):
+    """start a slurm script.
+    :param configs: dictionary of configuration variables from yaml file
+    :param opts: dictionary of options parsed by argparse
+    :param str sim_name: name of simulation
+    :param str output_dir: current output directory
+    :return: script as list of strings
+    """
+    script = []
+
+    script.append('#SBATCH --job-name={}'.format(sim_name))
+    script.append('#SBATCH --output={}/{}_IO.out'.format(output_dir, opts['prog_name']))
+    script.append('#SBATCH --error={}/{}_IO.err'.format(output_dir, opts['prog_name']))
+    script.append('#SBATCH --nodes={}'.format(configs['n_nodes']))
+    script.append('#SBATCH --ntasks-per-node={}'.format(configs['n_cores']))
+    if configs['queue'] is not None:
+        script.append('#SBATCH --partition={}'.format(configs['queue']))
+    if configs['max_tot_mem'] is not None:
+        script.append('#SBATCH --mem={}MB'.format(int(configs['max_tot_mem']/configs['n_nodes'])))
+    script.append('#SBATCH --time=12:00:00')
+    script.append('')
+    
+    script.append('# set up general variables')
+    if not is_none(configs['extra_scheduler_script']):
+        script.append('. {}'.format(configs['extra_scheduler_script']))
+    script.append('')
+    
+    script.append('# user output')
+    script.append('echo "Job statistics:"')
+    script.append('echo "    ID                $SLURM_JOB_ID"')
+    script.append('echo "    name              $SLURM_JOB_NAME"')
+    script.append('echo "    submit directory  $SLURM_SUBMIT_DIR"')
+    script.append('echo "    hosts             $SLURM_SUBMIT_HOST"')
+    script.append('echo "    nodes             $SLURM_JOB_NODELIST"')
+    script.append('echo "    nr. of nodes      $SLURM_JOB_NUM_NODES"')
+    script.append('echo "    nr. of cpus/node  $SLURM_CPUS_ON_NODE"')
+    script.append('echo "    nr. of tasks      $SLURM_NTASKS"')
+    script.append('echo "    node ID           $SLURM_NODEID"')
+    script.append('echo "" ')
+    script.append('')
+    
+    script.append('# set memory limit')
+    script.append('ulimit -l unlimited')
+    script.append('')
+    
+    script.append('# remove possible output and error file')
+    script.append('rm -f {}/{}_IO.out'.format(output_dir, opts['prog_name']))
+    script.append('rm -f {}/{}_IO.err'.format(output_dir, opts['prog_name']))
+    script.append('')
+    
+    return script
+
+
 def end_pbs_script(opts, run_dir, output_dir):
     """end a pbs script.
     :param opts: dictionary of options parsed by argparse
@@ -527,6 +606,24 @@ def end_pbs_script(opts, run_dir, output_dir):
     script.append('mv $loc_out {}/{}.out'.format(output_dir, opts['prog_name']))
     script.append('mv $loc_err {}/{}.err'.format(output_dir, opts['prog_name']))
     script.append('[[ -s {}.err ]] || rm {}.err'.format(*[opts['prog_name']]*2))
+    script.append('')
+    script.append('exit 0')
+    script.append('')
+    
+    return script
+
+
+def end_slurm_script(opts, run_dir, output_dir):
+    """end a slurm script.
+    :param opts: dictionary of options parsed by argparse
+    :param str run_dir: name of directory where run
+    :param str output_dir: current output directory
+    :return: script as list of strings
+    """
+    script = []
+    
+    script.append('# terminate slurm script')
+    script.append('[[ -s {}_IO.err ]] || rm {}_IO.err'.format(*[opts['prog_name']]*2))
     script.append('')
     script.append('exit 0')
     script.append('')
@@ -666,8 +763,7 @@ def create_exec_script(configs, opts, output_dir, input_fname):
     if configs['scheduler'] == 'pbs':
         exec_script += start_pbs_script(configs, opts, sim_name, output_dir)
     if configs['scheduler'] == 'slurm':
-        logger.error('NOT YET IMPLEMENTED')
-        sys.exit(1)
+        exec_script += start_slurm_script(configs, opts, sim_name, output_dir)
     
     # start temp_run-specific
     if not is_none(configs['temp_run_prefix']):
@@ -686,8 +782,7 @@ def create_exec_script(configs, opts, output_dir, input_fname):
     if configs['scheduler'] == 'pbs':
         exec_script += end_pbs_script(opts, run_dir, output_dir)
     if configs['scheduler'] == 'slurm':
-        logger.error('NOT YET IMPLEMENTED')
-        sys.exit(1)
+        exec_script += end_slurm_script(opts, run_dir, output_dir)
 
     if exec_script is None:
         logger.error('No script generated')
@@ -711,10 +806,9 @@ def create_exec_script(configs, opts, output_dir, input_fname):
     if configs['scheduler'] == 'none':
         cmds.append(Cmd(sim=sim_name, dir=output_dir, val=[script_fname]))
     if configs['scheduler'] == 'pbs':
-        cmds.append(Cmd(sim=sim_name, dir=None, val=['qsub', script_fname]))
+        cmds.append(Cmd(sim=sim_name, dir=output_dir, val=['qsub', script_fname]))
     if configs['scheduler'] == 'slurm':
-        logger.error('NOT YET IMPLEMENTED')
-        sys.exit(1)
+        cmds.append(Cmd(sim=sim_name, dir=output_dir, val=['sbatch', script_fname]))
     
     logger.info('Set up execution script for {} in "{}"'.format(sim_name, script_fname))
     
@@ -840,6 +934,9 @@ def main():
     
     # process yaml configs
     configs = process_configfile(opts)
+    
+    # check dependencies
+    check_deps()
     
     # set up output directory structure
     cmds = setup_output_structure(opts, configs)
