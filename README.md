@@ -20,6 +20,10 @@ Features:
 
 Run
 ```
+./run -g
+```
+to generate a template [yaml](http://yaml.org/start.html) options file, and see
+```
 ./run -h
 ```
 for more information.
