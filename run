@@ -920,7 +920,8 @@ def setup_output_structure(opts, configs):
     # copy executable and input
     try:
         copy2(os.path.join(configs['prog_dir'], opts['prog_name']), output_dir)
-        copy2(opts['input_fname'], output_dir)
+        if os.path.realpath(os.path.dirname(opts['input_fname'])) != os.path.realpath(output_dir):
+            copy2(opts['input_fname'], output_dir)
     except Exception as e:
         logger.error(e)
         sys.exit(1)
