@@ -66,7 +66,16 @@ def mod_var(fname_in, fname_out, mods):
         line_out = line
         for mod in mods:
             if mod.key in line:
-                line_out = '    {} = {}\n'.format(mod.key, mod.val)
+                exact_matches = 0
+                for line_elem in ' '.join(line.split()).split(' '):
+                    if line_elem == mod.key:
+                        exact_matches += 1
+                if exact_matches > 1:
+                    logger.error('More than 1 match for key "{}" in file "{}"'.format(mod.key, fname_in))
+                    sys.exit(1)
+                elif exact_matches == 1:
+                    line_out = '    {} = {}\n'.format(mod.key, mod.val)
+        
         f_out.write(line_out)
     
     f_in.close()
