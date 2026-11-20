@@ -1,15 +1,22 @@
+#!/usr/bin/env python3
 """One table row per run from the CHECKVAC lines that check_vac = .true. writes: identity residuals
 (c = -4 pi for the interior harmonics x, z, x^2 - y^2; c = 0 for the exterior potentials) and the
 exterior solve errors (max norm) for the point source, the axis ring and the ring with cos n zeta
-weights, plus the 1-norm condition estimate when present. Each argument is a run directory (the
-first np*/run.log, PB3D's standard output, is read) or such a log file. Usage: checkvac_table.py <run>..."""
+weights, plus the 1-norm condition estimate when present. These are the checks of the field-line
+vacuum (style 1); the axisymmetric vacuum (style 2) writes other ones, shown as '-'. Each argument is PB3D's standard output
+or a run directory holding it: the first np*/run.log (run_deck.sbatch of PB3D) or PB3D.out (`run`).
+Usage: checkvac_table.py <run>..."""
 import sys, re, os, glob
+if len(sys.argv) < 2: sys.exit(__doc__)   # usage
 cols_id = [('x', 0), ('z', 0), ('x2-y2', 0), ('point_source', 2), ('axis_ring', 2), ('axis_ring_n', 2)]
 cols_sv = ['point_source', 'axis_ring', 'axis_ring_n']
 print('%-30s %6s | %-9s %-9s %-9s | %-9s %-9s %-9s | %-9s %-9s %-9s | %s' % ('run', 'n_bnd', 'id x', 'id z', 'id x2-y2',
       'id point', 'id ring', 'id ring_n', 'sv point', 'sv ring', 'sv ring_n', 'cond1'))
 for p in sys.argv[1:]:
-    f = p if os.path.isfile(p) else sorted(glob.glob(os.path.join(p, 'np*', 'run.log')))[0]
+    logs = [p] if os.path.isfile(p) else sorted(glob.glob(os.path.join(p, 'np*', 'run.log'))) + \
+        [l for l in [os.path.join(p, 'PB3D.out')] if os.path.isfile(l)]
+    if not logs: sys.exit('no np*/run.log or PB3D.out in ' + p)
+    f = logs[0]
     name = os.path.basename(p.rstrip('/'))
     ident, solve, nb, cond = {}, {}, '', ''
     for line in open(f):

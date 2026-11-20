@@ -1,6 +1,8 @@
+#!/usr/bin/env python3
 """Diagonal of the stored vacuum response of one PB3D output against another, matched by |m|.
 Usage: compare_res.py <reference PB3D_out.h5> <other PB3D_out.h5> [label]"""
 import sys, h5py, numpy as np
+if len(sys.argv) < 3: sys.exit(__doc__)   # usage
 def load(path):
     f = h5py.File(path); g = f['vac_R_1'] if 'vac_R_1' in f else f['vac']
     re, im = g['RE_res/var'][()], g['IM_res/var'][()]; k = int(round(np.sqrt(re.size)))

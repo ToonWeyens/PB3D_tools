@@ -10,7 +10,7 @@ VMEC files (31 October 2026, PB3D issue #4; the notes of the first runs are in
   VMEC 8 text format. Stellarator-symmetric files only. `--flip` reverses the sign of the toroidal
   flux (iota and phips), for files such as PB3D's HELENA twins that carry a negative flux; the
   shipped benchmark has both positive.
-- `terps_data.py out.data title MM NMIN NMAX MMS NSMIN NSMAX NJ NK IVAC NOWALL AWALL MODELK NSTA AL0 [m_lo m_hi]`:
+- `terps_data.py out.data title MM NMIN NMAX MMS NSMIN NSMAX NJ NK IVAC NOWALL AWALL MODELK NSTA AL0 [m_lo m_hi [MPINIT [LPRESS [LCURRF]]]]`:
   writes the fixed-column control cards (not a namelist) for one toroidal mode number per row
   N = NSMIN..NSMAX (n = N·NFP/NSTA), poloidal modes m_lo..m_hi of the 56 columns (plus MPINIT,
   which the script leaves at 0), the Boozer table for N = NMIN..NMAX, fixed boundary with
@@ -46,7 +46,8 @@ the shift, so a shift scan with the count of eigenvalues below each shift bracke
   a family is dense (the rippled twin's fixed-boundary family gave 0.07766, 0.07797 and 0.08601
   for the shifts 0.070, 0.078 and 0.086). Compare discrete (unstable) eigenvalues, or a single
   row when the continuum is empty near the shift.
-- `srcs_fix/tpr_ap.x` is the corrected build (the two kinetic-energy lines swapped);
+- On Snellius, under `~/pb3d/ext/terpsichore` (neither file is in this repository):
+  `srcs_fix/tpr_ap.x` is the corrected build (the two kinetic-energy lines swapped), and
   `runs/run_terps_cases.sh case ...` runs a list of case directories (each with fort.18 and
   <case>.data) and prints the result lines.
 

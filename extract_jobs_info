@@ -29,10 +29,11 @@ echo
 echo "The output is saved to '$output_file'"
 echo
 
-# write info in output file
-echo "Eigenvalues from '$run_folder', corresponding to '$array_input':" > $output_file
-grep "^[^#;]" "$array_input" | sed -e 's/^/: /' | cat -n >> $output_file
-sed -i 's/^/# /' $output_file
+# write info in output file, as comment lines
+{
+    echo "Eigenvalues from '$run_folder', corresponding to '$array_input':"
+    grep "^[^#;]" "$array_input" | sed -e 's/^/: /' | cat -n
+} | sed -e 's/^/# /' > "$output_file"
 
 # get all inputs of array input
 IFS=$'\n' inputs=($(grep "^[^#;]" "$array_input"))
@@ -60,7 +61,7 @@ for (( i=1; i<=$n_inputs; i++ )); do
     output_string=$(printf "%-${column_width_int}s" $i)
     for (( j=1; j<=$nr_columns; j++ )); do
         # extract value, trim whitespaces
-        val=$(echo ${input_elem[$j-1]} | cut --complement -d = -f 1 | sed -e 's/^ *//g' -e 's/ *$//g')
+        val=$(echo ${input_elem[$j-1]} | cut -d = -f 2- | sed -e 's/^ *//g' -e 's/ *$//g')
         
         if [[ -z "${val// }" ]]; then
             output_string=$output_string$(printf "%-${column_width_int}s" "..")
@@ -69,17 +70,30 @@ for (( i=1; i<=$n_inputs; i++ )); do
         fi
     done
     
-    # check if error present
-    if [[ -s $run_folder/$i/PB3D.err ]]; then
-        echo "    ERROR FOUND:"
-        sed -e 's/^/        /' $run_folder/$i/PB3D.err | cat
+    # check if error present: the exit status that `run` writes in PB3D.status,
+    # or, for older runs without it, a PB3D.err that is not empty
+    status=0
+    [[ -s $run_folder/$i/PB3D.status ]] && status=$(cat $run_folder/$i/PB3D.status)
+    if [[ "$status" != 0 || -s $run_folder/$i/PB3D.err ]]; then
+        echo "    ERROR FOUND (exit status $status):"
+        [[ -s $run_folder/$i/PB3D.err ]] && sed -e 's/^/        /' $run_folder/$i/PB3D.err
         echo
-        sed -e 's/^/        /' $run_folder/$i/PB3D.out | tail
+        [[ -f $run_folder/$i/PB3D.out ]] && tail $run_folder/$i/PB3D.out | sed -e 's/^/        /'
         output_string=$output_string$(printf "%-${column_width_EV}s" "ERR" "ERR")
     else
-        # set up second part of output string: extracted Eigenvalue
-        EV_files=$(ls $run_folder/$i/PB3D_out_EV_R*.txt 2> /dev/null)
-        EV_file=$(echo $EV_files | rev | cut -d" " -f1 | rev)
+        # set up second part of output string: extracted Eigenvalue of the
+        # highest Richardson level (compared as numbers, so that 10 comes after 2)
+        EV_file=''
+        max_lvl=0
+        for f in $run_folder/$i/PB3D_out_EV_R_*.txt; do
+            [[ -f $f ]] || continue
+            lvl=${f##*_EV_R_}
+            lvl=${lvl%.txt}
+            if (( lvl > max_lvl )); then
+                max_lvl=$lvl
+                EV_file=$f
+            fi
+        done
         # check if something found: replace occurences of space by nothing
         if [[ -z "${EV_file// }" ]]; then
             echo "    no EV file found"

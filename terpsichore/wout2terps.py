@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Write TERPSICHORE's equilibrium file fort.18 from a VMEC netCDF wout file.
 
 Usage: python wout2terps.py wout.nc fort.18 [--flip] [--nfp K]
@@ -10,6 +11,7 @@ written with nfp = 1 whose boundary has that periodicity (PB3D's rippled twins):
 n a multiple of K are kept, so TERPSICHORE solves one mode family instead of every n.
 """
 import sys, numpy as np, netCDF4 as nc
+if len(sys.argv) < 3: sys.exit(__doc__)   # usage
 mu0 = 4e-7*np.pi
 src, dst = sys.argv[1], sys.argv[2]; flip = '--flip' in sys.argv
 f = nc.Dataset(src); g = lambda k: np.array(f.variables[k][:])

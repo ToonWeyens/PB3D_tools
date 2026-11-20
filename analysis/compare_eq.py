@@ -1,7 +1,9 @@
+#!/usr/bin/env python3
 """Compare the equilibrium (and grid) datasets of two PB3D output files.
 Usage: compare_eq.py <a.h5> <b.h5>  -- prints, per dataset under grid_eq, eq_1, eq_2, X_1 and grid_X,
 max|a-b|/max|a| with shapes, largest differences first."""
 import sys, h5py, numpy as np
+if len(sys.argv) < 3: sys.exit(__doc__)   # usage
 a, b = h5py.File(sys.argv[1]), h5py.File(sys.argv[2])
 rows = []
 def walk(ga, gb, p):

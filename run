@@ -37,6 +37,7 @@ schedulers = dict()
 schedulers['none'] = 'local'
 schedulers['pbs'] = 'through qsub'
 schedulers['slurm'] = 'through slurm'
+wall_time_def = '12:00:00'
 Mod = namedtuple('modification', 'key val')
 Cmd = namedtuple('command', 'sim dir val')
 
@@ -96,7 +97,7 @@ def generate_sample_configfile(fname):
             f.write('prog_dir: None\n\n')
             f.write('# Scheduler type (None: local, pbs: through qsub, slurm: through slurm):\n')
             f.write('scheduler: None\n\n')
-            f.write('# Valgrind executable location:\n')
+            f.write('# Valgrind executable location, only used with --debug (None: valgrind on the PATH):\n')
             f.write('valgrind_location: None\n\n')
             f.write('# temporary run directory prefix (should be on local drive to avoid network communication; e.g. /tmp/):\n')
             f.write('temp_run_prefix: None\n\n')
@@ -114,6 +115,8 @@ def generate_sample_configfile(fname):
             f.write('n_cores: None\n\n')
             f.write('# extra scheduler script to source:\n')
             f.write('extra_scheduler_script: None\n\n')
+            f.write('# wall time to ask from the scheduler, as "HH:MM:SS" in quotes (None: {}):\n'.format(wall_time_def))
+            f.write('wall_time: None\n\n')
         print('Done')
         sys.exit(1)
     
@@ -213,7 +216,8 @@ def parse():
             dest='config_fname')
         subparser.add_argument('n',
             action='store',
-            help='Number of MPI processes')
+            type=int,
+            help='Number of MPI processes (0: run without mpirun, as a single process)')
         subparser.add_argument(
             action='store',
             metavar='input',
@@ -307,7 +311,12 @@ def process_inputs(opts):
     :param opts: dictionary of options parsed by argparse
     """
     logger.info('Running program {}'.format(opts['prog_name']))
-    
+
+    # number of processes
+    if opts['n'] < 0:
+        logger.error('The number of processes cannot be negative')
+        sys.exit(1)
+
     # base directory
     opts['base_dir'] = os.getcwd()
     
@@ -391,7 +400,7 @@ def process_configfile(opts):
     # program directory: assume current directory if none; convert to absolute path
     if is_none(configs['prog_dir']):
         configs['prog_dir'] = os.getcwd()
-    configs['prog_dir'] = os.path.abspath(configs['prog_dir'])
+    configs['prog_dir'] = os.path.abspath(os.path.expanduser(configs['prog_dir']))
     logger.info('Program directory: "{}"'.format(configs['prog_dir']))
     prog_fname = os.path.join(configs['prog_dir'], opts['prog_name'])
     if not os.path.isfile(prog_fname):
@@ -410,17 +419,36 @@ def process_configfile(opts):
     else:
         logger.info('({})'.format(schedulers[scheduler]))
     
-    # valgrind directory: assume current directory if none; convert to absolute path
-    if is_none(configs['valgrind_location']):
-        configs['valgrind_location'] = os.path.join(os.getcwd(), 'valgrind')
-    configs['valgrind_location'] = os.path.abspath(configs['valgrind_location'])
-    logger.info('Valgrind location: {}'.format(configs['valgrind_location']))
-    if not os.path.isfile(configs['valgrind_location']) or not os.access(configs['valgrind_location'], os.X_OK):
-        logger.error('Could not find or execute valgrind at {}'.format(configs['valgrind_location']))
+    # valgrind: only needed for a debug run; look on the PATH if none given
+    if opts['debug']:
+        valgrind = configs.get('valgrind_location')
+        if is_none(valgrind):
+            valgrind = shutil.which('valgrind')
+            if valgrind is None:
+                logger.error('Debug run asked, but no valgrind on the PATH and no valgrind_location set')
+                sys.exit(1)
+        valgrind = os.path.abspath(os.path.expanduser(valgrind))
+        logger.info('Valgrind location: {}'.format(valgrind))
+        if not os.path.isfile(valgrind) or not os.access(valgrind, os.X_OK):
+            logger.error('Could not find or execute valgrind at {}'.format(valgrind))
+            sys.exit(1)
+        configs['valgrind_location'] = valgrind
+
+    # mpirun: needed to run locally with more than 0 processes (in a job, the
+    # extra scheduler script may still load it)
+    if scheduler == 'none' and opts['n'] > 0 and shutil.which('mpirun') is None:
+        logger.error('No mpirun on the PATH; load MPI or run with 0 processes (without mpirun)')
         sys.exit(1)
-    if opts['debug'] and is_none(configs['valgrind_location']):
-        logger.error('Not possible to launch debug mode without a working valgrind')
-        sys.exit(1)
+
+    # wall time: YAML reads an unquoted 12:00:00 as the number of seconds (43200)
+    wall_time = configs.get('wall_time')
+    if is_none(wall_time):
+        wall_time = wall_time_def
+    elif isinstance(wall_time, int):
+        wall_time = '{:d}:{:02d}:{:02d}'.format(wall_time//3600, wall_time%3600//60, wall_time%60)
+    configs['wall_time'] = str(wall_time)
+    if scheduler == 'pbs' or scheduler == 'slurm':
+        logger.info('Wall time: {}'.format(configs['wall_time']))
     
     # temporary run prefix
     temp_run_prefix = configs['temp_run_prefix']
@@ -478,7 +506,7 @@ def process_configfile(opts):
         
         logger.info('extra script "{}" specified for scheduler'.format(configs['extra_scheduler_script']))
         if not is_none(configs['extra_scheduler_script']):
-            configs['extra_scheduler_script'] = os.path.abspath(configs['extra_scheduler_script'])
+            configs['extra_scheduler_script'] = os.path.abspath(os.path.expanduser(configs['extra_scheduler_script']))
             if not os.path.isfile(configs['extra_scheduler_script']):
                 logger.error('Not a valid file')
                 sys.exit(1)
@@ -517,7 +545,7 @@ def start_pbs_script(configs, opts, sim_name, output_dir):
     script.append('#PBS -q {}'.format(configs['queue']))
     script.append('#PBS -l vmem={}mb'.format(configs['max_tot_mem']))
     script.append('#PBS -l mem={}mb'.format(configs['max_tot_mem']))
-    script.append('#PBS -l walltime=12:00:00')
+    script.append('#PBS -l walltime={}'.format(configs['wall_time']))
     script.append('')
     
     script.append('# set up general variables')
@@ -582,7 +610,7 @@ def start_slurm_script(configs, opts, sim_name, output_dir):
         script.append('#SBATCH --partition={}'.format(configs['queue']))
     if configs['max_tot_mem'] is not None:
         script.append('#SBATCH --mem={}MB'.format(int(configs['max_tot_mem']/configs['n_nodes'])))
-    script.append('#SBATCH --time=12:00:00')
+    script.append('#SBATCH --time={}'.format(configs['wall_time']))
     script.append('')
     
     script.append('# set up general variables')
@@ -625,9 +653,9 @@ def end_pbs_script(opts, run_dir, output_dir):
     script.append('mv $loc_err {}/{}.err'.format(output_dir, opts['prog_name']))
     script.append('[[ -s {}.err ]] || rm {}.err'.format(*[opts['prog_name']]*2))
     script.append('')
-    script.append('exit 0')
+    script.append('exit $status')
     script.append('')
-    
+
     return script
 
 
@@ -643,7 +671,7 @@ def end_slurm_script(opts, run_dir, output_dir):
     script.append('# terminate slurm script')
     script.append('[[ -s {}.err ]] || rm {}.err'.format(*[opts['prog_name']]*2))
     script.append('')
-    script.append('exit 0')
+    script.append('exit $status')
     script.append('')
     
     return script
@@ -735,19 +763,30 @@ def setup_bulk_script(configs, opts, input_fname):
         PB3D_out_name = os.path.basename(opts['PB3D_out_fname'])
         mpi_command = './{} {} {}'.format(opts['prog_name'], input_name, PB3D_out_name)
         if not is_none(configs['extra_POST_opts']):
-            mpi_command += configs['extra_POST_opts']
+            mpi_command += ' ' + configs['extra_POST_opts']
+    if opts['debug']:
+        mpi_command = '{} {}'.format(configs['valgrind_location'], mpi_command)
     script.append('MPI_command="{}"'.format(mpi_command))
     script.append('')
-    
-    script.append('# run mpi command')
-    script.append('run=$(which mpirun)')
-    if opts['debug']:
-        run_command = '{} '.format(configs['valgrind_location'])
+
+    if opts['n'] == 0:
+        script.append('# run as a single process, without mpirun')
+        run_command = '$MPI_command'
     else:
-        run_command = ''
-    script.append('{}$run -np {} $MPI_command'.format(run_command, opts['n']))
+        script.append('# run mpi command')
+        script.append('run=$(which mpirun)')
+        run_command = '$run -np {} $MPI_command'.format(opts['n'])
+    if configs['scheduler'] == 'none':
+        # no scheduler to keep the output: copy it to a file as well
+        script.append('{} 2>&1 | tee {}.out'.format(run_command, opts['prog_name']))
+        script.append('status=${PIPESTATUS[0]}')
+    else:
+        script.append(run_command)
+        script.append('status=$?')
+    script.append('echo $status > {}.status'.format(opts['prog_name']))
+    script.append('[[ $status -eq 0 ]] || echo "{} returned exit status $status"'.format(opts['prog_name']))
     script.append('')
-    
+
     return script
     
 
@@ -802,9 +841,10 @@ def create_exec_script(configs, opts, output_dir, input_fname):
     if configs['scheduler'] == 'slurm':
         exec_script += end_slurm_script(opts, run_dir, output_dir)
 
-    if exec_script is None:
-        logger.error('No script generated')
-        sys.exit(1)
+    # end local run (the scheduler scripts end with their own exit)
+    if configs['scheduler'] == 'none':
+        exec_script.append('exit $status')
+        exec_script.append('')
     
     # write to file with correct extension
     if configs['scheduler'] == 'none':
@@ -962,6 +1002,7 @@ def main():
     
     # execute commands
     # (based on https://www.endpoint.com/blog/2015/01/28/getting-realtime-output-using-python)
+    failed = list()
     for cmd in cmds:
         logger.info('Running command "{}"'.format(cmd.val))
         if opts['prog_name'] == 'PB3D' and len(opts['input_mods']) > 0:
@@ -988,7 +1029,19 @@ def main():
         print('')
         print('+ END SIMULATION {}+'.format(sim_name))
         print('')
-    
+
+        if p.returncode != 0:
+            failed.append((cmd, p.returncode))
+
+    # report failures: of the run itself when local, of the submission otherwise
+    sys.stdout.flush()  # the output of the runs before the messages, also when redirected
+    if failed:
+        what ='run' if configs['scheduler'] == 'none' else 'submission'
+        for cmd, status in failed:
+            logger.error('{} {} in "{}" returned exit status {}'.format(cmd.sim, what, cmd.dir, status))
+        logger.error('{} of {} {}s failed'.format(len(failed), len(cmds), what))
+        sys.exit(1)
+
     return None
 
 

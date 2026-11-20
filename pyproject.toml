@@ -1,0 +1,18 @@
+# Python packages of the scripts in this repository. Not a package itself.
+# `uv sync` makes .venv with all of them; `source .venv/bin/activate` then puts
+# them behind the `python3` that the scripts start with.
+[project]
+name = "pb3d-run-tools"
+version = "0"
+requires-python = ">=3.9"
+dependencies = [
+    "pyyaml",                                       # run
+]
+
+[dependency-groups]
+analysis = ["numpy", "h5py"]                        # analysis/ (checkvac_table.py needs neither)
+terpsichore = ["numpy", "netCDF4"]                  # terpsichore/wout2terps.py
+
+[tool.uv]
+package = false
+default-groups = ["analysis", "terpsichore"]
