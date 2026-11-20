@@ -2,8 +2,8 @@
 
 TERPSICHORE (EPFL, open source since 2025, Apache 2.0, https://gitlab.epfl.ch/spc/public/terpsichore)
 is a global linear ideal-MHD stability code for 3-D equilibria. These two scripts feed it PB3D's
-VMEC files (31 October 2026, issue #4; the notes of the first runs are in
-`Documentation/plan_vacuum_bugfix.md`, evening of 31 October, and in `Documentation/benchmarking_prep.md`).
+VMEC files (31 October 2026, PB3D issue #4; the notes of the first runs are in
+`vacuum-2026/plan_vacuum_bugfix.md`, evening of 31 October, and in `benchmarking/benchmarking_prep.md` of the private repository PB3D_studies).
 
 - `wout2terps.py wout.nc fort.18 [--flip]`: writes TERPSICHORE's equilibrium file from a netCDF
   wout (VMEC++ or VMEC 9), in the layout of its own `srcs/vmec2terps.f`, which only reads the
