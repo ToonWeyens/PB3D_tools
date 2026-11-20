@@ -1,8 +1,10 @@
+#!/usr/bin/env python3
 """Write a TERPSICHORE control-card file (fixed columns, as tprgl0_block_ap.f reads it).
 Usage: python terps_data.py out.data title MM NMIN NMAX MMS NSMIN NSMAX NJ NK IVAC NOWALL AWALL MODELK NSTA AL0 [m_lo m_hi [MPINIT [LPRESS [LCURRF]]]]
 Boozer table: all ones for m <= MM, every N; stability table: ones for m_lo..m_hi, every N in NSMIN..NSMAX.
 """
 import sys
+if len(sys.argv) < 17: sys.exit(__doc__)   # usage
 a = sys.argv[1:]
 out, title = a[0], a[1]
 MM, NMIN, NMAX, MMS, NSMIN, NSMAX, NJ, NK, IVAC, NOWALL = (int(x) for x in a[2:12])

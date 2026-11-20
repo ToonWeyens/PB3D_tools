@@ -1,7 +1,9 @@
+#!/usr/bin/env python3
 """Where do the stored integrated perturbation matrices differ between process counts?
 Usage: compare_np.py <np1 dir> <npK dir> ...  (each holding PB3D_out.h5). For every dataset
 under X_2_int_R_1, reshape by its lim and print the radial indices where |a-b| > 1e-9 max|a|."""
 import sys, h5py, numpy as np
+if len(sys.argv) < 2: sys.exit(__doc__)   # usage
 def load(path):
     f = h5py.File(path + '/PB3D_out.h5'); g = f['X_2_int_R_1']; out = {}
     for k in g:

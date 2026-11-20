@@ -1,6 +1,8 @@
+#!/usr/bin/env python3
 """Compare the matrices PB3D assembled with 1 and 2 processes (PETSc binary dumps, complex scalars).
 Usage: compare_petsc_mats.py mats_np1.dat mats_np2.dat [block size]"""
 import sys, numpy as np
+if len(sys.argv) < 3: sys.exit(__doc__)   # usage
 def read_mats(path):
     raw = np.fromfile(path, dtype='>i4'); b = open(path, 'rb').read(); off = 0; mats = []
     while off < len(b):
