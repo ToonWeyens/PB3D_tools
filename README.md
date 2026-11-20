@@ -42,7 +42,7 @@ Inspect all SLURM currently being run by user, with the option to cancel them in
 
 ## analysis
 Python 3 scripts that read PB3D output (`PB3D_out.h5`, PB3D's standard output or PETSc matrix
-dumps) of any run. They need `numpy`, and all but `checkvac_table.py` and
+dumps) of any run. All but `checkvac_table.py` need `numpy`, and all but `checkvac_table.py` and
 `compare_petsc_mats.py` need `h5py`. Each script prints its usage in its docstring.
 
 | Script | What it prints |
